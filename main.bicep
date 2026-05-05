@@ -225,8 +225,14 @@ param deploySubnets bool = true
 @description('Will deploy network security groups.')
 param deployNsgs bool = true
 
-@description('Deploy Azure Firewall with UDR for egress traffic control. Defaults to true when networkIsolation is enabled.')
+@description('Deploy Azure Firewall with UDR for egress traffic control. Defaults to true when networkIsolation is enabled. Set to false when egress is provided by an Azure Firewall living outside this deployment (e.g. in a hub VNet) — in that case provide externalFirewallPrivateIp so workload subnets get a default route to the hub firewall.')
 param deployAzureFirewall bool = true
+
+@description('Private IP of an Azure Firewall (or NVA) that lives outside this deployment, typically in a peered hub VNet. When set and deployAzureFirewall is false, a default route (0.0.0.0/0 -> VirtualAppliance) is created on the workload route table pointing at this IP, and the NAT Gateway is not deployed (egress flows through the hub firewall). Leave empty to keep the previous behavior (local firewall when deployAzureFirewall is true, otherwise NAT Gateway).')
+param externalFirewallPrivateIp string = ''
+
+@description('Full ARM resource ID of an existing resource group that hosts the shared Microsoft.Network/privateDnsZones used by this landing zone (typically in a hub subscription/RG). Format: /subscriptions/{subId}/resourceGroups/{rgName}. When set under network isolation, this template does NOT create or link private DNS zones; private endpoints reference zones in the supplied RG instead. Leave empty to fall back to the existing behavior (local zones, or policy-managed zones via policyManagedPrivateDns).')
+param existingPrivateDnsZonesResourceGroupId string = ''
 
 @description('Deploy an ACR Task agent pool so image builds can run inside the VNet when the registry has public access disabled. Requires a Premium container registry (auto-selected when networkIsolation is true) and is gated on both deployContainerRegistry and networkIsolation.')
 param deployAcrTaskAgentPool bool = true
@@ -469,12 +475,26 @@ var _extraRepoTags  = [for c in _manifestComponents: c.?tag ?? 'main']
 var _extraRepoNames = [for c in _manifestComponents: c.?name ?? replace(last(split(c.repo, '/')), '.git', '')]
 
 var _networkIsolation = empty(string(networkIsolation)) ? false : bool(networkIsolation)
+// Hub-and-spoke support: when egress is owned by an Azure Firewall (or NVA) outside this
+// deployment, the operator supplies its private IP. We still create the local route table
+// and a default route, but point it at the external firewall instead of a local one.
+var _useExternalFirewall = _networkIsolation && !deployAzureFirewall && !empty(externalFirewallPrivateIp)
+// NAT Gateway is only required for guaranteed egress when neither a local Azure Firewall
+// nor an external (hub) firewall is providing the default route. Otherwise egress flows
+// through the firewall via the route table and a NAT Gateway would conflict with that design.
+var _deployNatGateway = _networkIsolation && !deployAzureFirewall && !_useExternalFirewall
+// Hub-and-spoke DNS support: when an external private DNS zones RG is supplied (typically in
+// the hub subscription), this template skips creating zones and links and just references them.
+var _externalDnsZoneIdSegments = empty(existingPrivateDnsZonesResourceGroupId) ? [''] : split(existingPrivateDnsZonesResourceGroupId, '/')
+var _externalDnsZonesSubscriptionId = length(_externalDnsZoneIdSegments) >= 3 ? _externalDnsZoneIdSegments[2] : ''
+var _externalDnsZonesResourceGroupName = length(_externalDnsZoneIdSegments) >= 5 ? _externalDnsZoneIdSegments[4] : ''
+var _useExternalDnsZones = _networkIsolation && !empty(_externalDnsZonesSubscriptionId) && !empty(_externalDnsZonesResourceGroupName)
 // AMPLS (Azure Monitor Private Link Scope) and the related monitor/opinsights/automation
 // private DNS zones + private endpoint are only deployed when network isolation is on AND
 // the operator explicitly opts in via enablePrivateLogAnalytics. This lets isolated
 // deployments opt-out of AMPLS to avoid cross-workload private DNS conflicts.
 var _deployAmpls = _networkIsolation && deployAppInsights && deployLogAnalytics && enablePrivateLogAnalytics
-var _deployPrivateDnsZones = _networkIsolation && !policyManagedPrivateDns
+var _deployPrivateDnsZones = _networkIsolation && !policyManagedPrivateDns && !_useExternalDnsZones
 var _searchServiceLocation = empty(searchServiceLocation) ? location : searchServiceLocation
 var _speechServiceLocation = empty(speechServiceLocation) ? location : speechServiceLocation
 
@@ -789,7 +809,8 @@ var baseSubnets = [
       {
         name: jumpboxSubnetName
         addressPrefix: jumpboxSubnetPrefix 
-        natGatewayResourceId: natGateway.id
+        #disable-next-line BCP318
+        natGatewayResourceId: _deployNatGateway ? natGateway!.id : ''
         routeTableResourceId: routeTable.id
         delegation: ''
         serviceEndpoints : []
@@ -1056,14 +1077,17 @@ resource azureFirewall 'Microsoft.Network/azureFirewalls@2024-07-01' = if (deplo
   ]
 }
 
-// Default route through Azure Firewall
-resource defaultRoute 'Microsoft.Network/routeTables/routes@2024-07-01' = if (deployAzureFirewall && _networkIsolation) {
+// Default route through Azure Firewall (local, or external/hub firewall via externalFirewallPrivateIp)
+resource defaultRoute 'Microsoft.Network/routeTables/routes@2024-07-01' = if (_networkIsolation && (deployAzureFirewall || _useExternalFirewall)) {
   parent: routeTable
   name: 'default-to-firewall'
   properties: {
     addressPrefix: '0.0.0.0/0'
     nextHopType: 'VirtualAppliance'
-    nextHopIpAddress: azureFirewall!.properties.ipConfigurations[0].properties.privateIPAddress
+    nextHopIpAddress: deployAzureFirewall
+      #disable-next-line BCP318
+      ? azureFirewall!.properties.ipConfigurations[0].properties.privateIPAddress
+      : externalFirewallPrivateIp
   }
 }
 
@@ -1148,7 +1172,7 @@ module testVm 'br/public:avm/res/compute/virtual-machine:0.15.0' = if (deployVM 
   ]
 }
 
-resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-07-01' = if (deployVM && _networkIsolation) {
+resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-07-01' = if (_deployNatGateway) {
   name: '${const.abbrs.networking.publicIPAddress}${const.abbrs.networking.natGateway}${resourceToken}'
   location: location
   sku: {
@@ -1167,7 +1191,7 @@ resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-07-01' = if (depl
 }
 
 #disable-next-line BCP081
-resource natGateway 'Microsoft.Network/natGateways@2024-10-01' = if (deployVM && _networkIsolation) {
+resource natGateway 'Microsoft.Network/natGateways@2024-10-01' = if (_deployNatGateway) {
   name: '${const.abbrs.networking.natGateway}${resourceToken}'
   location: location
   sku: {
@@ -1176,7 +1200,8 @@ resource natGateway 'Microsoft.Network/natGateways@2024-10-01' = if (deployVM &&
   properties: {
     publicIpAddresses: [
       {
-        id: natPublicIp.id
+        #disable-next-line BCP318
+        id: natPublicIp!.id
       }
     ]
   }
@@ -1375,7 +1400,11 @@ resource cse 'Microsoft.Compute/virtualMachines/extensions@2024-11-01' = if (dep
 var _dnsZonesTargetRg = useExistingVNet && !sideBySideDeploy ? varExistingVnetResourceGroupName : resourceGroup().name
 var _dnsZonesLinkSuffix = useExistingVNet ? '-byon' : ''
 
-var _dnsZonesList = _deployPrivateDnsZones ? concat(
+// Full list of zones this workload needs, regardless of whether they are created here,
+// managed by Azure Policy, or owned by an external (hub) RG. Used both for the local
+// private-dns-zones module and for the REQUIRED_PRIVATE_DNS_ZONES output that hub
+// teams consume in hub-and-spoke deployments.
+var _requiredDnsZonesList = _networkIsolation ? concat(
   [
     { dnsName: 'privatelink.cognitiveservices.azure.com', virtualNetworkLinkName: '${vnetName}-cogsvcs-link${_dnsZonesLinkSuffix}' }
     { dnsName: 'privatelink.openai.azure.com',            virtualNetworkLinkName: '${vnetName}-openai-link${_dnsZonesLinkSuffix}' }
@@ -1400,6 +1429,8 @@ var _dnsZonesList = _deployPrivateDnsZones ? concat(
     { dnsName: 'privatelink.agentsvc.azure.automation.net',           virtualNetworkLinkName: '${vnetName}-azure-automation-link${_dnsZonesLinkSuffix}' }
   ] : []
 ) : []
+
+var _dnsZonesList = _deployPrivateDnsZones ? _requiredDnsZonesList : []
 
 module privateDnsZones 'modules/networking/private-dns-zones.bicep' = if (_deployPrivateDnsZones) {
   name: 'dep-private-dns-zones'
@@ -1623,8 +1654,12 @@ module privateEndpoints 'modules/networking/private-endpoints.bicep' = if (_netw
 //////////////////////////////////////////////////////////////////////////
 
 
-var _dnsZonesSubscriptionId = useExistingVNet && !sideBySideDeploy ? varExistingVnetSubscriptionId : subscription().subscriptionId
-var _dnsZonesResourceGroupName = useExistingVNet && !sideBySideDeploy ? varExistingVnetResourceGroupName : resourceGroup().name
+var _dnsZonesSubscriptionId = _useExternalDnsZones
+  ? _externalDnsZonesSubscriptionId
+  : (useExistingVNet && !sideBySideDeploy ? varExistingVnetSubscriptionId : subscription().subscriptionId)
+var _dnsZonesResourceGroupName = _useExternalDnsZones
+  ? _externalDnsZonesResourceGroupName
+  : (useExistingVNet && !sideBySideDeploy ? varExistingVnetResourceGroupName : resourceGroup().name)
 var _dnsZoneCogSvcsId = resourceId(_dnsZonesSubscriptionId, _dnsZonesResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.cognitiveservices.azure.com')
 var _dnsZoneOpenAiId = resourceId(_dnsZonesSubscriptionId, _dnsZonesResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.openai.azure.com')
 var _dnsZoneAiServicesId = resourceId(_dnsZonesSubscriptionId, _dnsZonesResourceGroupName, 'Microsoft.Network/privateDnsZones', 'privatelink.services.ai.azure.com')
@@ -3321,3 +3356,39 @@ output AZURE_SPEECH_RESOURCE_ID string = deploySpeechService ? speechService.out
 output AZURE_SPEECH_ENDPOINT string = deploySpeechService ? speechService.outputs.endpoint : ''
 output AZURE_SPEECH_REGION string = deploySpeechService ? _speechServiceLocation : ''
 output AZURE_SPEECH_RESOURCE_NAME string = deploySpeechService ? speechServiceName : ''
+
+// ──────────────────────────────────────────────────────────────────────
+// Hub-and-spoke contract
+//
+// When this deployment is a spoke (deployAzureFirewall=false +
+// externalFirewallPrivateIp set, and/or existingPrivateDnsZonesResourceGroupId
+// set), the operator owns the hub firewall rules and private DNS links. These
+// outputs expose the exact FQDN allow-list and zone names this workload needs,
+// so the hub team can apply them programmatically.
+// ──────────────────────────────────────────────────────────────────────
+
+@description('True when egress is delegated to a firewall outside this deployment (hub-and-spoke).')
+output USE_EXTERNAL_FIREWALL bool = _useExternalFirewall
+
+@description('True when private DNS zones are owned by an external (hub) resource group.')
+output USE_EXTERNAL_PRIVATE_DNS_ZONES bool = _useExternalDnsZones
+
+@description('FQDN allow-list this workload needs egress to. Apply on the hub firewall when deployAzureFirewall=false. Source = "*" unless noted; jumpbox/build-agent/editor sets are normally scoped to those subnets only.')
+output REQUIRED_FIREWALL_FQDNS object = {
+  essentialAuth:        _firewallEssentialAuthFqdns
+  essentialContainer:   _firewallEssentialContainerFqdns
+  essentialPlatform:    _firewallEssentialPlatformFqdns
+  essentialGitHub:      _firewallEssentialGitHubFqdns
+  jumpboxBootstrap:     extendFirewallForJumpboxBootstrap ? _firewallVmBootstrapFqdns : []
+  jumpboxDevRuntimes:   extendFirewallForJumpboxBootstrap ? _firewallDevRuntimeFqdns : []
+  jumpboxEditors:       extendFirewallForJumpboxBootstrap ? _firewallEditorFqdns : []
+  speech:               _firewallSpeechFqdns
+  acrTaskAgents:        extendFirewallForAcrTaskBuilds ? _firewallAcrTaskFqdns : []
+  acrTaskOsPackages:    extendFirewallForAcrTaskBuilds ? _firewallAcrTaskOsPackageFqdns : []
+}
+
+@description('Private DNS zone names this workload depends on. When USE_EXTERNAL_PRIVATE_DNS_ZONES is true, the hub team must ensure these zones exist in existingPrivateDnsZonesResourceGroupId and are linked to the spoke VNet.')
+output REQUIRED_PRIVATE_DNS_ZONES array = [for z in _requiredDnsZonesList: z.dnsName]
+
+@description('Resource ID of the spoke VNet that the hub team must link to each REQUIRED_PRIVATE_DNS_ZONES zone (virtualNetworkLinks).')
+output SPOKE_VNET_RESOURCE_ID string = virtualNetworkResourceId
