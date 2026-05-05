@@ -13,13 +13,24 @@
     "deploymentTags":                      { "value": {} },
     "principalId":                         { "value": "${AZURE_PRINCIPAL_ID}" },
 
+    "useUAI":                              { "value": "${USE_UAI}" },
+    "useCAppAPIKey":                       { "value": "${USE_CAPP_API_KEY}" },
+    "useZoneRedundancy":                   { "value": "false" },
+    "enableAgenticRetrieval":              { "value": "${ENABLE_AGENTIC_RETRIEVAL}" },
+
     "networkIsolation":                    { "value": "${NETWORK_ISOLATION}" },
+    "useExistingVNet":                     { "value": "${USE_EXISTING_VNET}" },
+    "existingVnetResourceId":              { "value": "${EXISTING_VNET_RESOURCE_ID}" },
+    "deploySubnets":                       { "value": "${DEPLOY_SUBNETS}" },
+    "deployNsgs":                          { "value": "true" },
+    "sideBySideDeploy":                    { "value": "${SIDE_BY_SIDE}" },
     "privateEndpointLocation":             { "value": "${AZURE_PE_LOCATION}" },
     "privateEndpointResourceGroupName":    { "value": "${AZURE_PE_RESOURCE_GROUP_NAME}" },
-    "useUAI":                              { "value": "${USE_UAI}" },
-    "useCAppAPIKey":                       { "value": "${USE_CAPP_API_KEY}" },    
-    "useZoneRedundancy":                   { "value": "false" },    
-    "enableAgenticRetrieval":              { "value": "${ENABLE_AGENTIC_RETRIEVAL}" },
+    "deployAzureFirewall":                 { "value": "${DEPLOY_AZURE_FIREWALL}" },
+    "externalFirewallPrivateIp":           { "value": "${EXTERNAL_FIREWALL_PRIVATE_IP=}" },
+    "policyManagedPrivateDns":             { "value": "${POLICY_MANAGED_PRIVATE_DNS=false}" },
+    "existingPrivateDnsZonesResourceGroupId": { "value": "${EXISTING_PRIVATE_DNS_ZONES_RG_ID=}" },
+    "bastionAllowedSourceIPs":             { "value": [] },
 
     "aiSearchResourceId":                  { "value": null },
     "aiFoundryStorageAccountResourceId":   { "value": null },
@@ -33,9 +44,6 @@
     "deployContainerApps":                  { "value": "true" },
     "deployContainerRegistry":              { "value": "true" },
     "deployContainerEnv":                   { "value": "true" },
-    "deployNsgs":                           { "value": "true" },
-    "deployAzureFirewall":                  { "value": "${DEPLOY_AZURE_FIREWALL}" },
-    "bastionAllowedSourceIPs":              { "value": [] },
     "deployMcp":                            { "value": "true" },
     "deployGroundingWithBing":              { "value": "false" },
     "deployKeyVault":                       { "value": "true" },
@@ -80,10 +88,6 @@
     "vmSize":                                { "value": "${AZURE_VM_SIZE=Standard_D2s_v3}" },
 
     "useCMK":                                { "value": "false" },
-    "useExistingVNet":                       { "value": "${USE_EXISTING_VNET}" },  
-    "deploySubnets":                         { "value": "${DEPLOY_SUBNETS}" },  
-    "sideBySideDeploy":                      { "value": "${SIDE_BY_SIDE}" }, 
-    "existingVnetResourceId":                { "value": "${EXISTING_VNET_RESOURCE_ID}" },     
 
     "modelDeploymentList":{
       "value": [
