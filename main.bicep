@@ -624,6 +624,7 @@ var _firewallEssentialPlatformFqdns = [
   '*.livediagnostics.monitor.azure.com'
   '*.ingest.monitor.azure.com'
   '*.monitor.azure.com'
+  #disable-next-line no-hardcoded-env-urls
   '*.monitor.core.windows.net'
   '*.opinsights.azure.com'
   '*.loganalytics.io'
@@ -848,7 +849,6 @@ module virtualNetworkSubnets 'modules/networking/subnets.bicep' = if (_networkIs
     deploySubnets : deploySubnets
     deployNsgs: deployNsgs
     useExistingVNet: useExistingVNet
-    virtualNetworkResourceId: virtualNetworkResourceId
   }
 }
 
@@ -1829,7 +1829,7 @@ var varAfNetworkingOverride = _networkIsolation ? {
 var varAfAiSearchCfgComplete = {
   existingResourceId: aiSearchResourceId != ''
     ? aiSearchResourceId
-    : deployAiFoundry ? searchServiceAIFoundry.outputs.resourceId : null
+    : deployAiFoundry ? searchServiceAIFoundry!.outputs.resourceId : null
   name: aiFoundrySearchServiceName
   privateDnsZoneResourceId: _networkIsolation ? _dnsZoneSearchId : null
   roleAssignments: []
@@ -1857,7 +1857,7 @@ var varAfKVCfgComplete = {
 var varAfStorageCfgComplete = {
   existingResourceId: aiFoundryStorageAccountResourceId != ''
     ? aiFoundryStorageAccountResourceId
-    : (deployAiFoundry ? aiFoundryStorageAccount.outputs.resourceId : null)
+    : (deployAiFoundry ? aiFoundryStorageAccount!.outputs.resourceId : null)
   name: aiFoundryStorageAccountName
   blobPrivateDnsZoneResourceId: _networkIsolation ? _dnsZoneBlobId : null
   roleAssignments: []
@@ -2055,8 +2055,9 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2025-01-01' = if (deplo
     appLogsConfiguration: {
       destination: null
     }
+    #disable-next-line BCP037
     appInsightsConfiguration: (deployAppInsights && deployLogAnalytics) ? {
-      connectionString: appInsights.properties.ConnectionString
+      connectionString: appInsights!.properties.ConnectionString
     } : null
     zoneRedundant: useZoneRedundancy
     workloadProfiles: workloadProfiles

@@ -187,10 +187,12 @@ resource capabilityHost 'Microsoft.CognitiveServices/accounts/projects/capabilit
     aiSearchConnectionResource
   ]
   properties: {
+    #disable-next-line BCP037
     capabilityHostKind: 'Agents'
     threadStorageConnections: ['${cosmosDbConnectionResource.name}']
     vectorStoreConnections: ['${aiSearchConnectionResource.name}']
     storageConnections: ['${storageAccountConnectionResource.name}']
+    #disable-next-line BCP037
     tags: tags
   }
 }

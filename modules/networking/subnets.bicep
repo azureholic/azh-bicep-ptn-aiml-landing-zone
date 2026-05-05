@@ -11,7 +11,6 @@ param useExistingVNet bool = false
 param deploySubnets bool = true
 param deployNsgs bool = true
 param prefix string = 'nsg-'
-param virtualNetworkResourceId string
 
 module virtualNetwork 'br/public:avm/res/network/virtual-network:0.7.0' = if (!useExistingVNet && deploySubnets) {
   name: 'virtualNetworkDeployment'
@@ -64,10 +63,5 @@ module subnetsM 'subnet.bicep' = [
           : (deployNsgs && !contains(invalidNsgSubnets, subnets[i].name) ? nsgsM[i]!.outputs.id : '')
         routeTableId: string(subnets[i].?routeTableResourceId ?? '')
     }
-  }
-]
-
-var subnetResourceIds = [for i in range(0,  length(subnets)): {
-    id : '${virtualNetworkResourceId}/subnets/${subnets[i].name}'
   }
 ]
